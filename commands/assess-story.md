@@ -216,11 +216,11 @@ find src/momo -name "*.py" -exec grep -h "^def " {} \; | sort | uniq -d | head -
 #### Check 8: Test Coverage Analysis
 
 ```bash
-# Get current coverage
-uv run pytest tests/stories/{story-id}/ --cov=src/momo --cov-report=term-missing --quiet 2>&1 | tail -20
+# Run full test suite to check for regressions and get coverage
+uv run pytest --cov=src/momo --cov-report=term-missing --quiet 2>&1 | tail -20
 ```
 
-**Output:** Coverage statistics for story-related code
+**Output:** Full test suite results and overall coverage statistics (detects regressions)
 
 ---
 
@@ -464,10 +464,13 @@ None - excellent type safety maintained.
 
 ### 6. Test Coverage ({score}/100)
 
-**Story Coverage:** {percentage}%
-**Overall Coverage Change:** {+/-X}%
+**Full Test Suite Status:** {all passing / X failures}
+**Overall Coverage:** {percentage}%
+**Coverage Change:** {+/-X}%
 
 {detailed coverage report}
+
+**Regressions Detected:** {yes/no - list any failing tests outside story scope}
 
 **Assessment:** {evaluation}
 
@@ -566,6 +569,8 @@ Provide a concise summary that **points to the detailed assessment** rather than
 📊 Overall Health Score: {score}/100 ({grade})
 
 Key Findings:
+  • Full Test Suite: {all passing / X failures} {status-emoji}
+  • Regressions: {yes/no} {status-emoji}
   • Type Ignores: {count} {status-emoji}
   • TODOs/FIXMEs: {count} {status-emoji}
   • Architecture: {compliant/violations} {status-emoji}
@@ -586,6 +591,11 @@ Key Findings:
 
   # Type ignore tracking
   cat docs/type-ignore-registry.md
+
+{if regressions detected:}
+🚨 REGRESSIONS DETECTED - Tests that previously passed are now failing!
+   Review full test output and fix before proceeding to next story.
+{endif}
 
 {if score < 70:}
 ⚠️  Score below 70 - Review recommendations in assessment before next story
