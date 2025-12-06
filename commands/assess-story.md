@@ -14,14 +14,66 @@ argument-hint: <story-id>
 
 ---
 
+## Document Architecture (No Duplication)
+
+This workflow follows a **single source of truth** pattern to eliminate duplication:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ SINGLE SOURCE OF TRUTH (Detailed)                          │
+│ docs/qa/assessments/{story-id}-debt-assessment-{date}.md    │
+│                                                             │
+│ • All findings, analysis, scores                           │
+│ • All recommendations                                      │
+│ • References type-ignore-registry for type ignores        │
+└──────────────────┬──────────────────────────────────────────┘
+                   │
+                   │ Referenced by (no duplication)
+                   │
+       ┌───────────┴────────────┐
+       │                        │
+       ▼                        ▼
+┌─────────────────┐    ┌──────────────────────┐
+│ docs/           │    │ docs/                │
+│ tech-debt.md    │    │ type-ignore-         │
+│                 │    │ registry.md          │
+│ • Story index   │    │                      │
+│ • Links to      │    │ • Active type        │
+│   assessments   │    │   ignores only       │
+│ • Active cross- │    │ • Specialized        │
+│   story debt    │    │   tracking           │
+└─────────────────┘    └──────────────────────┘
+       │
+       │ Summarized by
+       │
+       ▼
+┌─────────────────┐
+│ Console Output  │
+│                 │
+│ • Key metrics   │
+│ • Pointers to   │
+│   detailed docs │
+└─────────────────┘
+```
+
+**Key Principle:** Information lives in ONE place. Other documents reference it, not duplicate it.
+
+**What This Eliminates:**
+- ❌ Same findings in 3 places
+- ❌ Same recommendations in 3 places
+- ❌ Type ignores duplicated across documents
+- ✅ Single source, multiple views
+
+---
+
 ## Workflow Overview
 
 This command performs a comprehensive technical debt assessment after a story is completed:
 
 1. **Analysis Phase** - Run automated checks for technical debt indicators
-2. **Document Creation** - Create or update tracking documents
-3. **Report Generation** - Generate story-specific assessment report
-4. **Recommendations** - Provide actionable consolidation and cleanup tasks
+2. **Document Creation** - Create or update tracking documents (following no-duplication architecture)
+3. **Report Generation** - Generate story-specific assessment report (single source of truth)
+4. **Summary Display** - Show key metrics and point to detailed assessment
 
 ---
 
@@ -39,20 +91,22 @@ In an AI-agent-first workflow with parallel atomic commits:
 
 ### Step 1.1: Determine Git Range
 
-Identify the git commit range for this story:
+Identify the git commit range for this story using the atomic-plan-assessment file as the boundary (the last planning artifact before implementation):
 
 ```bash
-# Find the story planning commit
-git log --oneline --grep="docs(story-{story-id}): add test design and atomic commit plan" -1
+# Find the atomic-plan-assessment file for this story
+ASSESSMENT_FILE=$(ls docs/qa/assessments/{story-id}-atomic-plan-assessment-*.md 2>/dev/null | head -1)
 
-# Get the commit hash
-PLANNING_COMMIT=$(git log --oneline --grep="docs(story-{story-id}): add test design and atomic commit plan" -1 --format="%H")
+# Get the commit where this file was added
+PLANNING_COMMIT=$(git log --diff-filter=A --format="%H" -1 -- "$ASSESSMENT_FILE")
 
 # Find current HEAD
 HEAD_COMMIT=$(git rev-parse HEAD)
 ```
 
 **Output:** Store `PLANNING_COMMIT` and `HEAD_COMMIT` for diff analysis
+
+**Rationale:** The atomic-plan-assessment file is the final planning document before implementation begins, making it the logical boundary for measuring technical debt introduced during story execution.
 
 ### Step 1.2: Run Technical Debt Checks
 
@@ -61,11 +115,11 @@ Execute the following checks in parallel and collect results:
 #### Check 1: Type Ignore Comments Added
 
 ```bash
-# Count type: ignore comments added
-git diff ${PLANNING_COMMIT} HEAD --unified=0 | grep -c "type: ignore" || echo "0"
+# Count type: ignore comments added (only added lines, not removed)
+git diff ${PLANNING_COMMIT} HEAD --unified=0 | grep -c "^\+.*type: ignore" || echo "0"
 
 # List locations
-git diff ${PLANNING_COMMIT} HEAD --unified=0 | grep "type: ignore"
+git diff ${PLANNING_COMMIT} HEAD --unified=0 | grep "^\+.*type: ignore"
 ```
 
 **Output:** Count and list of new `type: ignore` comments
@@ -86,15 +140,15 @@ git diff ${PLANNING_COMMIT} HEAD --unified=0 | grep -E "^\+.*TODO|^\+.*FIXME"
 
 ```bash
 # Find new fixtures in story conftest
-find tests/stories/${STORY_ID} -name conftest.py 2>/dev/null || echo "No story conftest found"
+find tests/stories/{story-id} -name conftest.py 2>/dev/null || echo "No story conftest found"
 
 # If found, extract fixture definitions
-if [ -f tests/stories/${STORY_ID}/conftest.py ]; then
-    grep "^def \|^@pytest.fixture" tests/stories/${STORY_ID}/conftest.py
+if [ -f tests/stories/{story-id}/conftest.py ]; then
+    grep -E "^def |^@pytest.fixture" tests/stories/{story-id}/conftest.py
 fi
 
 # Compare with global fixtures
-grep "^def \|^@pytest.fixture" tests/conftest.py
+grep -E "^def |^@pytest.fixture" tests/conftest.py
 ```
 
 **Output:** List of new story-level fixtures and potential promotion candidates
@@ -121,7 +175,7 @@ grep -r "def calculate_\|def rank_\|def construct_" src/momo/signals/ src/momo/p
 
 ```bash
 # Find test files that don't follow convention
-find tests/stories/${STORY_ID} -name "test_*.py" 2>/dev/null | grep -v -E "test_[0-9]+\.[0-9]+_(unit|integration|e2e)_[0-9]+\.py" || echo "✓ All test files follow naming convention"
+find tests/stories/{story-id} -name "test_*.py" 2>/dev/null | grep -v -E "test_[0-9]+\.[0-9]+_(unit|integration|e2e)_[0-9]+\.py" || echo "✓ All test files follow naming convention"
 ```
 
 **Output:** List of non-compliant test file names or confirmation of compliance
@@ -130,16 +184,20 @@ find tests/stories/${STORY_ID} -name "test_*.py" 2>/dev/null | grep -v -E "test_
 
 ```bash
 # Find tests missing priority markers
-for test_file in tests/stories/${STORY_ID}/*/*/test_*.py 2>/dev/null; do
-    if ! grep -q "@pytest.mark.p[012]" "$test_file"; then
-        echo "Missing priority marker: $test_file"
+for test_file in tests/stories/{story-id}/*/test_*.py; do
+    if [ -f "$test_file" ]; then
+        if ! grep -q "@pytest.mark.p[012]" "$test_file"; then
+            echo "Missing priority marker: $test_file"
+        fi
     fi
 done
 
 # Find tests missing level markers
-for test_file in tests/stories/${STORY_ID}/*/*/test_*.py 2>/dev/null; do
-    if ! grep -q "@pytest.mark.\(unit\|integration\|e2e\)" "$test_file"; then
-        echo "Missing level marker: $test_file"
+for test_file in tests/stories/{story-id}/*/test_*.py; do
+    if [ -f "$test_file" ]; then
+        if ! grep -q "@pytest.mark.\(unit\|integration\|e2e\)" "$test_file"; then
+            echo "Missing level marker: $test_file"
+        fi
     fi
 done
 ```
@@ -159,7 +217,7 @@ find src/momo -name "*.py" -exec grep -h "^def " {} \; | sort | uniq -d | head -
 
 ```bash
 # Get current coverage
-uv run pytest tests/stories/${STORY_ID}/ --cov=src/momo --cov-report=term-missing --quiet 2>&1 | tail -20
+uv run pytest tests/stories/{story-id}/ --cov=src/momo --cov-report=term-missing --quiet 2>&1 | tail -20
 ```
 
 **Output:** Coverage statistics for story-related code
@@ -170,110 +228,76 @@ uv run pytest tests/stories/${STORY_ID}/ --cov=src/momo --cov-report=term-missin
 
 ### Step 2.1: Create or Update docs/tech-debt.md
 
+**Architecture Principle:** `tech-debt.md` is a **lightweight index and active debt tracker**, NOT a duplicate of assessment details. It tracks cross-story consolidation opportunities and provides a dashboard view.
+
 **First Run:** If `docs/tech-debt.md` doesn't exist, create it with this template:
 
 ```markdown
 # Technical Debt Tracker
 
-This document tracks technical debt, consolidation opportunities, and refactoring candidates identified during post-story assessments.
-
 **Last Updated:** {current-date}
 
-**Purpose:** Maintain a living record of technical debt across stories to guide refactoring efforts and prevent quality erosion.
+**Purpose:** Track active cross-story technical debt and consolidation opportunities. This is an index/dashboard - see individual story assessments for detailed findings.
 
 ---
 
-## Active Debt Items
+## Active Consolidation Opportunities
 
-### Fixture Consolidation Opportunities
+### Fixture Consolidation
+<!-- Fixtures that should be promoted to global scope -->
 
-<!-- Story-level fixtures that should be promoted to global -->
+**None currently tracked**
+
+### Code Duplication
+<!-- Patterns repeated across stories that should be extracted -->
+
+**None currently tracked**
+
+### Architecture Improvements
+<!-- Design issues or boundary violations requiring attention -->
+
+**None currently tracked**
+
+---
+
+## Story Assessment Index
+
+| Story | Date | Score | Grade | Key Issues | Report |
+|-------|------|-------|-------|------------|--------|
+
+**Note:** Click report links for detailed findings, analysis, and recommendations.
+
+---
+```
+
+**Update Existing:** If `docs/tech-debt.md` exists:
+
+1. **Update "Active Consolidation Opportunities"** section:
+   - Add new items discovered in this story that affect multiple locations
+   - Update existing items if this story added to them
+   - **Do NOT duplicate detailed findings here** - those go in the assessment report
+
+2. **Add entry to "Story Assessment Index"** table:
+
+```markdown
+| {story-id} | {date} | {score}/100 | {grade} | {1-2 word summary} | [Assessment](qa/assessments/{story-id}-debt-assessment-{date}.md) |
+```
+
+**Example entries for Active Opportunities:**
+
+```markdown
+### Fixture Consolidation
+
+- **`sample_price_data`** - Used in stories 1.2, 1.3, 1.4 story conftest files. Should promote to `tests/conftest.py`. [Story 1.4 Assessment](qa/assessments/1.4-debt-assessment-20250115.md#fixtures)
 
 ### Code Duplication
 
-<!-- Repeated patterns that should be extracted -->
-
-### Architecture Improvements
-
-<!-- Boundary violations or design improvements needed -->
-
-### Type Safety Issues
-
-<!-- type: ignore comments that need resolution -->
-
-### Test Organization
-
-<!-- Test structure improvements needed -->
-
----
-
-## Story Assessments
-
-<!-- Reverse chronological order - newest first -->
-
-```
-
-**Update Existing:** If `docs/tech-debt.md` exists, read it and append the new story assessment.
-
-**Story Assessment Format:**
-
-```markdown
-### Story {story-id} - {date}
-
-**Story Title:** {title from story file}
-**Commits:** {N} commits ({PLANNING_COMMIT}..{HEAD_COMMIT})
-**Files Changed:** {count} files
-
-#### Findings Summary
-
-| Category | Count | Status |
-|----------|-------|--------|
-| Type Ignores Added | {count} | {🟢/🟡/🔴} |
-| TODOs/FIXMEs Added | {count} | {🟢/🟡/🔴} |
-| New Fixtures | {count} | {🟢/🟡/🔴} |
-| Architecture Violations | {count} | {🟢/🟡/🔴} |
-| Test Naming Issues | {count} | {🟢/🟡/🔴} |
-| Missing Test Markers | {count} | {🟢/🟡/🔴} |
-
-**Status Key:** 🟢 Clean (0) | 🟡 Minor (1-2) | 🔴 Needs Attention (3+)
-
-#### New Fixtures in Story Conftest
-
-{list of fixtures, or "None"}
-
-**Promotion Candidates:**
-- {fixture_name} - {reason it should be promoted}
-
-#### Type Ignores Added
-
-{list with file:line and context, or "None"}
-
-#### TODOs/FIXMEs Added
-
-{list with file:line and context, or "None"}
-
-#### Architecture Notes
-
-{violations or "✓ No violations detected"}
-
-#### Test Quality Notes
-
-{issues or "✓ All tests properly structured and marked"}
-
-#### Code Duplication Detected
-
-{patterns or "✓ No obvious duplication detected"}
-
-#### Recommendations
-
-1. **Immediate:** {tasks that should be done now}
-2. **Next Story:** {tasks that can wait}
-3. **Backlog:** {tasks for future cleanup}
-
----
+- **Momentum calculation helpers** - Similar logic in `signals/momentum.py` and `signals/ranking.py`. Extract to shared utility. [Story 2.1 Assessment](qa/assessments/2.1-debt-assessment-20250120.md#duplication)
 ```
 
 ### Step 2.2: Create or Update docs/type-ignore-registry.md
+
+**Architecture Principle:** `type-ignore-registry.md` is the **single source of truth** for all type ignore comments. Assessment reports **reference** this registry, not duplicate it.
 
 **First Run:** If `docs/type-ignore-registry.md` doesn't exist, create it with this template:
 
@@ -339,6 +363,8 @@ This document tracks all `type: ignore` comments in the codebase with justificat
 
 ### Step 3.1: Create Story-Specific Assessment File
 
+**Architecture Principle:** This is the **single source of truth** for detailed story findings. Other documents reference this, not duplicate it.
+
 Create `docs/qa/assessments/{story-id}-debt-assessment-{YYYYMMDD}.md` with detailed findings:
 
 ```markdown
@@ -367,7 +393,15 @@ Story {story-id} introduced **{overall-rating}** technical debt:
 
 **Type Ignores Added:** {count}
 
-{detailed list or "None - excellent type safety"}
+{if count > 0:}
+See [Type Ignore Registry](../../type-ignore-registry.md#story-{story-id}) for detailed tracking.
+
+**Locations Added:**
+- {file}:{line} - {brief context}
+- {file}:{line} - {brief context}
+
+{else:}
+None - excellent type safety maintained.
 
 **Assessment:** {evaluation}
 
@@ -494,11 +528,11 @@ Story {story-id} introduced **{overall-rating}** technical debt:
 Run these commands to verify issues:
 
 ```bash
-# Type ignores
-git diff {PLANNING_COMMIT} HEAD | grep "type: ignore"
+# Type ignores (added only)
+git diff {PLANNING_COMMIT} HEAD --unified=0 | grep "^\+.*type: ignore"
 
-# TODOs
-git diff {PLANNING_COMMIT} HEAD | grep -E "TODO|FIXME"
+# TODOs (added only)
+git diff {PLANNING_COMMIT} HEAD --unified=0 | grep -E "^\+.*TODO|^\+.*FIXME"
 
 # Architecture violations
 grep -r "from momo.backtest" src/momo/signals/ src/momo/portfolio/
@@ -524,7 +558,7 @@ find tests/stories/{story-id} -name "test_*.py" -exec grep -L "@pytest.mark.p[01
 
 ### Step 4.1: Display Summary to User
 
-Provide a concise summary of the assessment:
+Provide a concise summary that **points to the detailed assessment** rather than duplicating it:
 
 ```
 🔍 Story {story-id} Technical Debt Assessment Complete
@@ -539,33 +573,27 @@ Key Findings:
   • Code Duplication: {rating} {status-emoji}
 
 📁 Documents Updated:
-  ✓ docs/tech-debt.md
+  ✓ docs/tech-debt.md (index updated)
   ✓ docs/type-ignore-registry.md (if type ignores found)
   ✓ docs/qa/assessments/{story-id}-debt-assessment-{date}.md
 
-🎯 Recommended Actions:
-  Immediate:
-    - {action 1}
-    - {action 2}
-
-  Next Story:
-    - {action 1}
-
-  Backlog:
-    - {action 1}
-
-💡 Trends:
-  {comparison to previous story, if available}
-
-📋 Quick Commands:
-  # View full assessment
+📋 View Details:
+  # Full assessment with recommendations
   cat docs/qa/assessments/{story-id}-debt-assessment-{date}.md
 
-  # View tech debt tracker
+  # Dashboard view across all stories
   cat docs/tech-debt.md
 
-  # View type ignore registry
+  # Type ignore tracking
   cat docs/type-ignore-registry.md
+
+{if score < 70:}
+⚠️  Score below 70 - Review recommendations in assessment before next story
+{endif}
+
+{if previous story exists:}
+📈 Trend: {improving/stable/degrading} compared to Story {prev-id} ({prev-score}/100)
+{endif}
 ```
 
 ---
